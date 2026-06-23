@@ -2,6 +2,38 @@
 #include <math.h>
 #include <stdlib.h>
 #include <time.h>
+#include <omp.h>
+#include <unistd.h>
+
+
+
+
+// ================================================================
+// Time testing
+// ================================================================
+
+// variables used to measure time to execute certain sections
+double buildTime = 0.0;
+double forceTime = 0.0;
+double accelTime = 0.0;
+
+void printProgress(int stepVal, int tSteps, int width) {
+    double perVal = (double) stepVal / (tSteps) * 100;
+
+    char progBar[] = "========================================================================================================================";
+    char emptyBar[] = "------------------------------------------------------------------------------------------------------------------------";
+    char empty[] = "";
+
+    // Width of the filled bar
+    int filledWidth = (int) (perVal / 100 * width);
+    int emptyPad = width - filledWidth;
+    printf("%.s", emptyBar);
+    // Bunch of mumbo jumbo I took ages to figure out
+    // First bit (%5.2f%) just means 'print this number to 2 decimal places, and make it take up at least 5 places'
+    // %.*s Basically just means 'Input how many characters to print of a string, input the string to be truncated'
+    printf("\r %5.2f%% [%.*s%.*s]", perVal, filledWidth, progBar, emptyPad, emptyBar);
+    fflush(stdout);
+}
 
 // ================================================================
 // Structure definition
@@ -40,6 +72,31 @@ typedef struct node {
 } node;
 
 // ================================================================
+// Memory management function
+// ================================================================
+
+/*
+Instead of storing all the node data in different places in cache, I can allocate one large pool of memory and store them all contiguously.
+*/
+node *pool; // A pointer to where all the nodes will be stored
+int nodeCap; // The max amount of nodes in the pool
+int nodeCount; // How many nodes are currently in the pool
+
+// A bump allocator used to simplify the process of freeing all the memory
+node* poolAlloc() {
+    if (nodeCount >= nodeCap) {
+        printf("Pool overflow error \n");
+    }
+    // The adress at which the new node is to be stored
+    node* nodePtr = &pool[nodeCount];
+    nodeCount++;
+    *nodePtr = (node){0}; // Clears the node of previous data
+
+    // Returns a pointer to where the node should be stored
+    return nodePtr;
+}
+
+// ================================================================
 // Quadtree helper functions
 // ================================================================
 
@@ -72,31 +129,19 @@ void quadDivide(node *tNode) {
 
     node emptyNode;
 
-    tNode->children[0] = malloc(sizeof(node));
+    tNode->children[0] = poolAlloc();
     *tNode->children[0] = (node){.xmin = tNode->xmin, .xmax = xmid, .ymin = ymid, .ymax = tNode->ymax};
 
-    tNode->children[1] = malloc(sizeof(node));
+    tNode->children[1] = poolAlloc();
     *tNode->children[1] = (node){.xmin = xmid, .xmax = tNode->xmax, .ymin = ymid, .ymax = tNode->ymax};
     
-    tNode->children[2] = malloc(sizeof(node));
+    tNode->children[2] = poolAlloc();
     *tNode->children[2] = (node){.xmin = tNode->xmin, .xmax = xmid, .ymin = tNode->ymin, .ymax = ymid};
     
-    tNode->children[3] = malloc(sizeof(node));
+    tNode->children[3] = poolAlloc();
     *tNode->children[3] = (node){.xmin = xmid, .xmax = tNode->xmax, .ymin = tNode->ymin, .ymax = ymid};
 
 }
-
-// Function which frees the allocated memory
-// It takes the node which its being called on as a parameter, and it frees all its kids
-void freeTree(node* n) {
-    for (int i = 0; i < 4; i++) {
-        if (n->children[i] != NULL) {
-            freeTree(n->children[i]);
-        }
-    }
-    free(n);
-}
-
 
 // This little function serves to help the insertBody function, by calculating
 // which index position to insert the new node at
@@ -207,15 +252,11 @@ void insertBody(node *targetNode, body *b) {
     }
     */
     
-
-
     // If the node is empty then nodeBody == NULL
 }
-
 // ================================================================
 // Force calculator function
 // ================================================================
-
 
 // This calculates the force that a specific node 'tNode' is acting on the body 'b'
 vec2 calculateForce(node *tNode, body *b, double antiSingularity, double G, double Theta) {
@@ -278,7 +319,7 @@ vec2 calculateForce(node *tNode, body *b, double antiSingularity, double G, doub
 // Quadtree helper functions
 // ================================================================
 
-double* randomGen(int lower, int upper, int N) {
+double* randomGen(int lower, int upper, unsigned int N) {
     // Adress at which the array is saved at
     double *adress = calloc(N, sizeof(double));
 
@@ -306,7 +347,7 @@ double* randomContinuous(double maxMag, int N) {
 }
 
 // Cute little helper function to make it easier to write data to the binary file
-void writeFrame(FILE *dataFile, body *bodies, int N, float *frameBuffer) {
+void writeFrame(FILE *dataFile, body *bodies, unsigned int N, float *frameBuffer) {
     for (int i = 0; i < N; i++) {
         frameBuffer[2*i] = (float)bodies[i].position.x;
         frameBuffer[(2*i)+1] = (float)bodies[i].position.y;
@@ -315,15 +356,8 @@ void writeFrame(FILE *dataFile, body *bodies, int N, float *frameBuffer) {
 }
 
 void timeLoop(body *bodies, int N, double antiSingularity, double G, int tSteps, double dt, double theta, int xmax, int ymax) {
-    
-
     // The array storing the acceleration info for the bodies
     vec2 *accelArray = calloc(N, sizeof(vec2));
-
-    
-
-
-    
 
     /*
     When outputed to the binary file, I need to specify the value of N,
@@ -331,65 +365,64 @@ void timeLoop(body *bodies, int N, double antiSingularity, double G, int tSteps,
     as the first item in the file.
     */
 
-    
-
-    
-
     // So firstly I have to create the entire tree datastructure, by recursively inserting each node
 
-    node* rootPtr = malloc(sizeof(node));
+    nodeCount = 0;
+    node* rootPtr = poolAlloc();
     *rootPtr = (node){0};
-    rootPtr->xmax = xmax * 2;
-    rootPtr->xmin = -xmax * 2;
-    rootPtr->ymax = ymax * 2;
-    rootPtr->ymin = -ymax * 2;
+    rootPtr->xmax = xmax * 2; rootPtr->xmin = -xmax * 2;
+    rootPtr->ymax = ymax * 2; rootPtr->ymin = -ymax * 2;
 
-
+    double t0 = omp_get_wtime();
     // Inserts all bodies into the tree to populate it
     for (int i = 0; i < N; i++) {
         insertBody(rootPtr, &bodies[i]);
     }
+    
+    double t1 = omp_get_wtime();
     // Uses the lovely tree to calculate the forces and accelerations on all the bodies
+    // It also makes use of openmp to paralellise it
+    #pragma omp parallel for schedule(dynamic, 32)
     for (int i = 0; i < N; i++) {
         vec2 f = calculateForce(rootPtr, &bodies[i], antiSingularity, G, theta);
+        
         accelArray[i].x = f.x / bodies[i].mass;
-        accelArray[i].y = f.y / bodies[i].mass;
-    }
-    // Uses the acceleration data to calculate the change in velocity and position of the bodies
-    // This is the leapfrog method
-    for (int i = 0; i < N; i++) {
         bodies[i].velocity.x += accelArray[i].x * dt;
-        bodies[i].velocity.y += accelArray[i].y * dt;
-
         bodies[i].position.x += bodies[i].velocity.x * dt;
+
+
+        accelArray[i].y = f.y / bodies[i].mass;
+        bodies[i].velocity.y += accelArray[i].y * dt;
         bodies[i].position.y += bodies[i].velocity.y * dt;
     }
+    double t2 = omp_get_wtime();
 
-    
-   
 
-    freeTree(rootPtr);
+    buildTime += t1 - t0;
+    forceTime += t2 - t1;
+
     free(accelArray);
-        
-
+    
+    
 }
 
 
 int main() {
+    fprintf(stderr,"\nMax threads: %d \n", omp_get_max_threads());
     // Seeding the random generation function, so it doesnt repeat values
     srand(time(NULL));
     // Simulation parameters
-    int N = 10000; // Number of bodies
-    int tSteps = 2000;
+    unsigned int N = 20000; // Number of bodies
+    int tSteps = 20000;
     double antiSingularity = 1.0;
     double G = 1;
     double theta = 1.0; 
-    int xMax = 2000; // Maximum x distance
-    int yMax = 2000; // Self explanatory
-    int vMax = 10; // Max velocity
-    int mMax = 10; // Max mass
-    int mMin = 9;
-    double dt = 0.005;
+    int xMax = 4000; // Maximum x distance
+    int yMax = 4000; // Self explanatory
+    int vMax = 66; // Max velocity
+    int mMax = 100; // Max mass
+    int mMin = 90;
+    double dt = 0.04;
     
     double *xVals = randomContinuous(xMax, N);
     double *yVals = randomContinuous(yMax, N);
@@ -428,9 +461,22 @@ int main() {
     the euler step method I was originally going to use.    
     */ 
 
+    // Using the pool memory allocator, for cache locality
 
+    // nodeCap determines how many nodes can be stored in the memory pool, any more nodes than this will cause the pool to overflow and the program to presumably become very corrupted
+
+    nodeCap = 8 * N;
+    pool = calloc(nodeCap, sizeof(node));
+    nodeCount = 0;
+
+    if (pool == NULL) {
+        printf("Pool memory allocation failed!!! PANIC!!! \n");
+        exit(1);
+    }
+
+    fprintf(stderr, "Initial tree build successful. \n");
     // Creating the root node
-    node* rootPtr = malloc(sizeof(node));
+    node* rootPtr = poolAlloc();
     *rootPtr = (node){0};
     rootPtr->xmax = xMax * 2;
     rootPtr->xmin = -xMax * 2;
@@ -459,8 +505,10 @@ int main() {
     
     // Now I free all the memory used to perform those calculations
 
-    freeTree(rootPtr);
+    //freeTree(rootPtr);
     free(accelArray);
+
+    fprintf(stderr, "Initial tree collapse successful. \n");
 
     // This is the main loop which performs all the calculations, and saving the data
 
@@ -469,7 +517,10 @@ int main() {
 
     // Checking if the file was actually created, as who knows what the C program would do otherwise
     if (dataFile == NULL) {
-        printf("Output file can't be created:");
+        fprintf(stderr ,"Output file can't be created:");
+    }
+    else {
+        fprintf(stderr, "Output file successfully created. \n \nBeginning calculations: \n \n");
     }
 
     // Writes the parameters required for the PythonRenderer to interpret the data
@@ -482,7 +533,16 @@ int main() {
     // Initial conditions of the system
     writeFrame(dataFile,bodies,N,frameBuffer);
 
+    // Code for the loading bar
+    static char barString[] = "||||||||||||||||||||||||||||||||||||||||";
+    static int barLength = 40;
+
+    int barInterval = (tSteps / (6 * barLength)) ;
+
     for (int j = 0; j < tSteps; j++) {
+        if ((j+1) % barInterval == 0) {
+            printProgress(j, tSteps, barLength);
+        }
         timeLoop(bodies,N,antiSingularity,G,tSteps,dt,theta,xMax,yMax);
          /* And finally writing this output to a file, each row will contain the state for a single body at a single time
         [xPos_0, yPos_0, xPos_1, yPos_1...]
@@ -490,7 +550,9 @@ int main() {
         writeFrame(dataFile,bodies,N,frameBuffer);
     }
     fclose(dataFile);
+    free(frameBuffer);
     free(bodies);
+    free(pool);
 
-    
+    fprintf(stderr, "\nBuild time: %.2f, force time: %.2f \n", buildTime, forceTime);
 }
