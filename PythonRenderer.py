@@ -29,14 +29,16 @@ maxDist = np.max(data[0])
 print("maxDist: ", maxDist)
 view.camera = 'panzoom'
 view.camera.set_range(x=(-maxDist, maxDist), y=(-maxDist, maxDist))
+view.camera.aspect = 1.0
 
+stepsPerFrame = 4
 
 inc = 0
 def frame(event):
     global inc
-    if inc < tSteps:
+    if (inc) < tSteps:
         scatter.set_data(data[inc])
-        inc += 1
+        inc += stepsPerFrame
     else:
         inc = 0
         print("Looped")

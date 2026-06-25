@@ -84,8 +84,9 @@ int nodeCount; // How many nodes are currently in the pool
 
 // A bump allocator used to simplify the process of freeing all the memory
 node* poolAlloc() {
-    if (nodeCount >= nodeCap) {
-        printf("Pool overflow error \n");
+    if (nodeCount >= nodeCap-1) {
+        printf("\n \n Pool overflow error at: [%d/%d] \n", nodeCount, nodeCap);
+        exit(1);
     }
     // The adress at which the new node is to be stored
     node* nodePtr = &pool[nodeCount];
@@ -330,6 +331,15 @@ double* randomGen(int lower, int upper, unsigned int N) {
     return adress;
 }
 
+double* randomContinuousPositive(double maxMag, int N) {
+    double* adress = calloc(N, sizeof(double));
+    for (int i = 0; i < N; i++) {
+        double val = maxMag * rand()/RAND_MAX;
+        *(adress + i) = val;
+    }
+    return adress;
+}
+
 double* randomContinuous(double maxMag, int N) {
     double *adress = calloc(N, sizeof(double));
 
@@ -406,29 +416,103 @@ void timeLoop(body *bodies, int N, double antiSingularity, double G, int tSteps,
     
 }
 
+/*
+This is the glorious function which actually generates the initial conditions of the system.
+It takes a parameter 'genType' which determines what type of distribution will be used to generate
+the bodies positions, and velocities.
+
+The types are as follows:
+    - 0: Uniform circle
+        - All bodies have a velocity such that the gravitational acceleration of the bodies is
+        (initially) exactly equal to that required to keep it in a circular orbit around the COM.
+        - In order to keep the bodies equally spread out over area, their density needs to be proportional to the radius
+
+*/
+
+void distributionFunction(int *N, int NSpawn, double maxR, int genType, double* xVals, double* yVals, double* vxVals, double* vyVals, vec2 xOff, vec2 vOff) {
+    double pi = 3.14159;
+    if (genType == 0) {
+        double *randThetas = randomContinuousPositive(2 * pi, *N);
+        /* 
+        Well the problem is that the random number generator I am using, is a continuous distribution.
+        And I need the radial distance distribution to not be continuous, as the stellar distance density
+        has to be directly proportional to the radial distance.
+        */
+       double *squaredRadialDistances = randomContinuous(maxR * maxR, *N);
+       double *radialDistances = calloc(*N, sizeof(double));
+       double velConstant = -0.002;
+
+       for (int i = 0; i < NSpawn; i++) {
+            // Handle the square root of a negative number
+            if (squaredRadialDistances[i] > 0) {
+                radialDistances[i] = sqrt(squaredRadialDistances[i]);
+            }
+            else {
+                radialDistances[i] = -sqrt(-squaredRadialDistances[i]);
+            }
+            xVals[i] = (radialDistances[i] * cos(randThetas[i])) + xOff.x;
+            yVals[i] = (radialDistances[i] * sin(randThetas[i])) + xOff.y;
+
+            double v = velConstant * radialDistances[i];
+            vxVals[i] = (v * sin(randThetas[i])) + vOff.x;
+            vyVals[i] = (-v * cos(randThetas[i])) + vOff.y;
+       }
+
+       // Close distance
+
+       double minDist = 1e30;
+       int body1 = -1, body2 = -1;
+
+       for (int i = 0; i < *N; i++) {
+            for (int j = i+1; j < *N; j++) {
+                double dx = xVals[i] - xVals[j], dy = yVals[i] - yVals[j];
+                double dist = sqrt(dx*dx + dy*dy);
+                if (dist < minDist) {
+                    minDist = dist; body1 = i; body2 = j;
+                }
+            }
+       }
+       printf("min separation %.3e between body %d and %d \n", minDist, body1, body2);
+    }
+    else {
+        printf("Chosen generator type does not exist.");
+    }
+    *N += 10;
+    printf("Value of N in function: %d \n", *N);
+}
 
 int main() {
     fprintf(stderr,"\nMax threads: %d \n", omp_get_max_threads());
     // Seeding the random generation function, so it doesnt repeat values
     srand(time(NULL));
     // Simulation parameters
-    unsigned int N = 20000; // Number of bodies
-    int tSteps = 20000;
+    int N = 100; // Number of bodies
+    int capacity = 200; // Maximum number of bodies which the simulation can handle
+    int tSteps = 8000;
     double antiSingularity = 1.0;
     double G = 1;
     double theta = 1.0; 
     int xMax = 4000; // Maximum x distance
     int yMax = 4000; // Self explanatory
-    int vMax = 66; // Max velocity
-    int mMax = 100; // Max mass
-    int mMin = 90;
-    double dt = 0.04;
-    
-    double *xVals = randomContinuous(xMax, N);
-    double *yVals = randomContinuous(yMax, N);
+    int vMax = 6; // Max velocity
+    int mMax = 10; // Max mass
+    int mMin = 9;
+    double dt = 0.3;
 
-    double *vxVals = randomContinuous(vMax, N);
-    double *vyVals = randomContinuous(vMax, N);
+    double *xVals = calloc(capacity, sizeof(double));
+    double *yVals = calloc(capacity, sizeof(double));
+    double *vxVals = calloc(capacity, sizeof(double));
+    double *vyVals = calloc(capacity, sizeof(double));
+
+    // Parameters for galaxy spawning
+    vec2 xOff = {0.0, 0.0}; vec2 vOff = {0.0, 0.0};
+
+    distributionFunction(&N, 100, xMax, 0, xVals, yVals, vxVals, vyVals, xOff, vOff);
+
+    printf("Value of N: %d \n", N);
+
+    //double *vxVals = randomContinuous(vMax, N);
+    //double *vyVals = randomContinuous(vMax, N);
     double *mVals = randomGen(mMin,mMax, N);
 
     // Initialise bodies loop
@@ -465,7 +549,7 @@ int main() {
 
     // nodeCap determines how many nodes can be stored in the memory pool, any more nodes than this will cause the pool to overflow and the program to presumably become very corrupted
 
-    nodeCap = 8 * N;
+    nodeCap = 16 * N;
     pool = calloc(nodeCap, sizeof(node));
     nodeCount = 0;
 
@@ -540,7 +624,7 @@ int main() {
     int barInterval = (tSteps / (6 * barLength)) ;
 
     for (int j = 0; j < tSteps; j++) {
-        if ((j+1) % barInterval == 0) {
+        if ((j) % barInterval == 0) {
             printProgress(j, tSteps, barLength);
         }
         timeLoop(bodies,N,antiSingularity,G,tSteps,dt,theta,xMax,yMax);
@@ -549,10 +633,12 @@ int main() {
         */
         writeFrame(dataFile,bodies,N,frameBuffer);
     }
+    // Completes the print bar so that it is always at 100% at the end of the program.
+    printProgress(tSteps,tSteps, barLength);
     fclose(dataFile);
     free(frameBuffer);
     free(bodies);
     free(pool);
 
-    fprintf(stderr, "\nBuild time: %.2f, force time: %.2f \n", buildTime, forceTime);
+    fprintf(stderr, "\nBuild time: %.2f, force time: %.2f \n \n", buildTime, forceTime);
 }
